@@ -7,7 +7,7 @@ import robosuite as suite
 from robosuite.wrappers import GymWrapper
 from networks import CriticNetwork, ActorNetwork
 from buffer import ReplayBuffer
-from td3_torch import Agent
+from sac import Agent
 import torch as T
 
 if __name__ == "__main__":
@@ -17,7 +17,7 @@ if __name__ == "__main__":
         os.makedirs("tmp/td3")
 
     # Switch to Lift environment
-    env_name = "Lift"
+    env_name = "PickPlace"
 
     # Create the environment using robosuite, with a smaller horizon for faster training
     env = suite.make(
