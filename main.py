@@ -98,6 +98,8 @@ if __name__ == "__main__":
             # 1) Agent chooses action
             action = agent.choose_action(observation)
             # 2) Step environment
+            start_time = time.time()
+
             next_observation, reward, done, info = env.step(action)
             score += reward
             # 3) Store transition and learn
@@ -105,6 +107,10 @@ if __name__ == "__main__":
             agent.learn()
             # 4) Move to next state
             observation = next_observation
+            end_time = time.time()
+            elapsed = end_time - start_time
+            
+
 
         # Log the score in TensorBoard
         writer.add_scalar(f"score/{episode_identifier}", score, global_step=i)
@@ -113,4 +119,4 @@ if __name__ == "__main__":
         if i % 10 == 0:
             agent.save_models()
 
-        print(f"Episode {i}, Score {score}")
+        print(f"Episode {i} finished with score {score:.2f} in {elapsed:.2f} seconds")
