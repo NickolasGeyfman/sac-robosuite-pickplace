@@ -19,7 +19,16 @@ class Agent():
         self.n_actions = n_actions
         
         #Create networks
-        self.actor = ActorNetwork(alpha, input_dims, n_actions, name='actor', max_action=env.action_space.high)
+        self.actor = ActorNetwork(
+            alpha=alpha,
+            input_dims=input_dims,
+            n_actions=n_actions,
+            max_action=env.action_space.high,
+            fc1_dims=256,
+            fc2_dims=256,
+            name='actor',
+            chkpt_dir='tmp/sac'
+)
         self.critic_1 = CriticNetwork(beta, input_dims, n_actions, name='critic_1')
         self.critic_2 = CriticNetwork(beta, input_dims, n_actions, name='critic_2')
         self.value = ValueNetwork(beta, input_dims, name='value')

@@ -26,7 +26,7 @@ if __name__ == "__main__":
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
-        horizon=100,                    
+        horizon=300,                    
     )
     env = GymWrapper(env)
 

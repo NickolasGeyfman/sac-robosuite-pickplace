@@ -8,6 +8,7 @@ from robosuite.wrappers import GymWrapper
 from networks import CriticNetwork, ActorNetwork, ValueNetwork
 from buffer import ReplayBuffer
 from sac import Agent
+from torch.utils.tensorboard import SummaryWriter
 
 import torch as T
 
@@ -28,7 +29,7 @@ if __name__ == "__main__":
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
-        horizon=100,
+        horizon=500,
     )
     
     env = GymWrapper(env)

@@ -1,154 +1,221 @@
 import os
-import torch as T 
-import torch.nn.functional as F
+import torch as T
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.distributions.normal import Normal
 import numpy as np
 
 
 class CriticNetwork(nn.Module):
-    def __init__(self, beta, input_dims, n_actions, fc1_dims=256, fc2_dims=256, name='critic', chkpt_dir='tmp/sac'):
+    """
+    The CriticNetwork computes Q(s, a).
+    It has two fully-connected layers, then outputs a single Q-value.
+    """
+    def __init__(
+        self,
+        beta,                     # learning rate
+        input_dims,               # state shape (e.g. [obs_dim])
+        n_actions,                # number of action dimensions
+        fc1_dims=256,
+        fc2_dims=256,
+        name="critic",
+        chkpt_dir="tmp/sac"
+    ):
         super(CriticNetwork, self).__init__()
+
         self.input_dims = input_dims
+        self.n_actions = n_actions
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
-        self.n_actions = n_actions
         self.name = name
         self.checkpoint_dir = chkpt_dir
-        self.checkpoint_file = os.path.join(chkpt_dir, name+'_sac')
+        self.checkpoint_file = os.path.join(self.checkpoint_dir, name + "_sac")
 
-        #Critic evaluates the Q-value of the state-action pair
-        self.fc1 = nn.Linear(self.input_dims[0] + n_actions, self.fc1_dims)
+        # Layers
+        self.fc1 = nn.Linear(self.input_dims[0] + self.n_actions, self.fc1_dims)
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
         self.q = nn.Linear(self.fc2_dims, 1)
 
+        # Optimizer
         self.optimizer = optim.Adam(self.parameters(), lr=beta)
+
+        # Device handling
         if T.backends.mps.is_available():
-            self.device = T.device('mps')
+            self.device = T.device("mps")
         elif T.cuda.is_available():
-            self.device = T.device('cuda')
+            self.device = T.device("cuda")
         else:
-            self.device = T.device('cpu')
+            self.device = T.device("cpu")
         self.to(self.device)
 
-    # Forward pass
     def forward(self, state, action):
-        action_value = self.fc1(T.cat([state, action], dim=1))
-        action_value = F.relu(action_value)
-        action = self.fc2(action_value)
-        action_value = F.relu(action_value)
-        q = self.q(action_value)
+        """
+        Forward pass: Q(s, a)
+        """
+        x = T.cat([state, action], dim=1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        q_value = self.q(x)
+        return q_value
 
-        return q
-    
     def save_checkpoint(self):
-        print("...saving checkpoint...")
+        print("...saving checkpoint for Critic...")
         T.save(self.state_dict(), self.checkpoint_file)
 
     def load_checkpoint(self):
+        print("...loading checkpoint for Critic...")
         self.load_state_dict(T.load(self.checkpoint_file))
 
+
 class ValueNetwork(nn.Module):
-    def __init__(self, beta, input_dims, fc1_dims=256, fc2_dims=256, name='value', chkpt_dir='tmp/sac'):
+    """
+    The ValueNetwork computes V(s).
+    It has two fully-connected layers, then outputs a single state-value.
+    """
+    def __init__(
+        self,
+        beta,              # learning rate
+        input_dims,
+        fc1_dims=256,
+        fc2_dims=256,
+        name="value",
+        chkpt_dir="tmp/sac"
+    ):
         super(ValueNetwork, self).__init__()
+
         self.input_dims = input_dims
         self.fc1_dims = fc1_dims
+        self.fc2_dims = fc2_dims
         self.name = name
         self.checkpoint_dir = chkpt_dir
-        self.checkpoint_file = os.path.join(chkpt_dir, name+'_sac')
+        self.checkpoint_file = os.path.join(self.checkpoint_dir, name + "_sac")
 
-        self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
-        self.fc2 = nn.Linear(self.fc1_dims, fc2_dims)
+        # Layers
+        self.fc1 = nn.Linear(self.input_dims[0], self.fc1_dims)
+        self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
         self.v = nn.Linear(self.fc2_dims, 1)
 
+        # Optimizer
         self.optimizer = optim.Adam(self.parameters(), lr=beta)
+
+        # Device handling
         if T.backends.mps.is_available():
-            self.device = T.device('mps')
+            self.device = T.device("mps")
         elif T.cuda.is_available():
-            self.device = T.device('cuda')
+            self.device = T.device("cuda")
         else:
-            self.device = T.device('cpu')
+            self.device = T.device("cpu")
         self.to(self.device)
 
     def forward(self, state):
-        value = self.fc1(state)
-        value = F.relu(value)
-        value = self.fc2(value)
-        value = F.relu(value)
-        value = self.v(value)
+        """
+        Forward pass: V(s)
+        """
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
+        v = self.v(x)
+        return v
 
-        return value
-    
     def save_checkpoint(self):
-        print("...saving checkpoint...")
+        print("...saving checkpoint for Value...")
         T.save(self.state_dict(), self.checkpoint_file)
 
     def load_checkpoint(self):
+        print("...loading checkpoint for Value...")
         self.load_state_dict(T.load(self.checkpoint_file))
 
+
 class ActorNetwork(nn.Module):
-    def __init__(self, alpha, input_dims, max_action, fc1_dims=256, fc2_dims=256, n_actions=2, name='actor', chkpt_dir='tmp/sac'):
+    """
+    The ActorNetwork outputs a policy in the form of a Gaussian (mu, sigma),
+    and then samples actions via a reparameterized trick.
+    """
+    def __init__(
+        self,
+        alpha,                   # learning rate
+        input_dims,
+        max_action=1.0,          # scale for the final tanh-squashed action
+        fc1_dims=256,
+        fc2_dims=256,
+        n_actions=2,
+        name="actor",
+        chkpt_dir="tmp/sac"
+    ):
         super(ActorNetwork, self).__init__()
+
+        self.input_dims = input_dims
         self.fc1_dims = fc1_dims
         self.fc2_dims = fc2_dims
         self.n_actions = n_actions
         self.name = name
         self.checkpoint_dir = chkpt_dir
-        self.checkpoint_file = os.path.join(chkpt_dir, name+'_sac')
+        self.checkpoint_file = os.path.join(self.checkpoint_dir, name + "_sac")
         self.max_action = max_action
 
-        #reparameterization trick used to sample actions from a policy network in a way that allows for gradient-based optimization
+        # Reparameterization trick
         self.reparam_noise = 1e-6
-        self.fc1 = nn.Linear(*input_dims, self.fc1_dims)
+
+        # Layers
+        self.fc1 = nn.Linear(self.input_dims[0], self.fc1_dims)
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
-        #Outputs the mean of the Gaussian distribution
         self.mu = nn.Linear(self.fc2_dims, self.n_actions)
-        #Outputs the standard deviation of the Gaussian distribution
         self.sigma = nn.Linear(self.fc2_dims, self.n_actions)
 
-        self.optimizer = optim.Adam(self.parameters(), lr = alpha)
-        if T.backends.mps.is_available():
-            self.device = T.device('mps')
-        elif T.cuda.is_available():
-            self.device = T.device('cuda')
-        else:
-            self.device = T.device('cpu')
+        # Optimizer
+        self.optimizer = optim.Adam(self.parameters(), lr=alpha)
 
+        # Device handling
+        if T.backends.mps.is_available():
+            self.device = T.device("mps")
+        elif T.cuda.is_available():
+            self.device = T.device("cuda")
+        else:
+            self.device = T.device("cpu")
         self.to(self.device)
 
     def forward(self, state):
-        prob = self.fc1(state)
-        prob = F.relu(prob)
-        prob = self.fc2(prob)
-        prob = F.relu(prob)
+        """
+        Forward pass: produce mu, sigma for each action dimension.
+        """
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
 
-        mu = self.mu(prob)
-        sigma = self.sigma(prob)
-
-        sigma = T.clamp(sigma, min=self.reparam_noise, max=1)
+        mu = self.mu(x)
+        sigma = self.sigma(x)
+        # clamp sigma so it doesn't blow up
+        sigma = T.clamp(sigma, min=self.reparam_noise, max=1.0)
 
         return mu, sigma
-    
+
     def sample_normal(self, state, reparameterize=True):
+        """
+        Sample an action from the Gaussian (mu, sigma) distribution,
+        then tanh-squash it to be in [-max_action, +max_action].
+        Returns both the action and the log-likelihood of that action.
+        """
         mu, sigma = self.forward(state)
-        probabilities = Normal(mu, sigma)
+        dist = Normal(mu, sigma)
 
         if reparameterize:
-            actions = probabilities.rsample()
+            actions = dist.rsample()
         else:
-            actions = probabilities.sample()
+            actions = dist.sample()
 
-        action = T.tanh(actions)*T.tensor(self.max_action).to(self.device)
-        log_probs = probabilities.log_prob(actions)
-        log_probs -= T.log(1-action.pow(2)+self.reparam_noise)
-        log_probs = log_probs.sum(1, keepdim=True)
+        # Tanh-squash
+        out = T.tanh(actions) * T.tensor(self.max_action).to(self.device)
 
-        return action, log_probs
-    
+        # Compute log_probs (accounting for tanh's Jacobian)
+        log_probs = dist.log_prob(actions)
+        log_probs -= T.log(1 - out.pow(2) + self.reparam_noise)
+        log_probs = log_probs.sum(dim=1, keepdim=True)
+
+        return out, log_probs
+
     def save_checkpoint(self):
-        print("...saving checkpoint...")
+        print("...saving checkpoint for Actor...")
         T.save(self.state_dict(), self.checkpoint_file)
 
     def load_checkpoint(self):
+        print("...loading checkpoint for Actor...")
         self.load_state_dict(T.load(self.checkpoint_file))
