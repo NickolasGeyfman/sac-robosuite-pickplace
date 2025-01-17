@@ -4,7 +4,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import robosuite as suite
 from robosuite.wrappers import GymWrapper
-from td3_torch import Agent
+from sac import Agent
 import torch as T
 
 if __name__ == "__main__":
@@ -12,7 +12,7 @@ if __name__ == "__main__":
         os.makedirs("tmp/td3")
 
     # Switch to Lift environment again
-    env_name = "Lift"
+    env_name = "PickPlace"
 
     env = suite.make(
         env_name,
