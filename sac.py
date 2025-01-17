@@ -3,238 +3,143 @@ import torch as T
 import torch.nn.functional as F
 import numpy as np
 from buffer import ReplayBuffer
-from networks import ActorNetwork, CriticNetwork
+from networks import ActorNetwork, CriticNetwork, ValueNetwork
 
-class Agent:
-    def __init__(
-        self, actor_learning_rate, critic_learning_rate, input_dims, tau, env,
-        gamma=0.99, update_actor_interval=2, warmup=1000,
-        n_actions=2, max_size=1000000, layer1_size=256, layer2_size=128,
-        batch_size=100, noise=0.1
-    ):
+#alpha and beta are learning rates for actor and critic networks
+#gamma is the discount factor (controls how much the agent values future rewards of immediate rewards)
+#tau controls the soft update of target value network
+
+class Agent():
+    def __init__(self, alpha=0.0003, beta=0.0003, input_dims=[88], env=None, gamma=0.99, n_actions=2, max_size=1000000,
+                 tau=0.005, layer1_size=256, layer2_size=256, batch_size=256, reward_scale=2):
         self.gamma = gamma
         self.tau = tau
-        
-        # Additional TD3 hyperparams for target noise
-        self.policy_noise = 0.2     # noise added to target actions
-        self.noise_clip = 0.5       # clamp target noise
-        self.noise = noise          # exploration noise for actor
-
-        self.max_action = env.action_space.high
-        self.min_action = env.action_space.low
-
         self.memory = ReplayBuffer(max_size, input_dims, n_actions)
         self.batch_size = batch_size
-        self.learn_step_cntr = 0
-        self.time_step = 0
-        self.warmup = warmup
         self.n_actions = n_actions
-        self.update_actor_interval = update_actor_interval
-
-        # Default device to CPU; can be overridden after creation
-        self.device = T.device('cpu')
-
-        # Create networks
-        self.actor = ActorNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='actor', learning_rate=actor_learning_rate
-        ).to(self.device)
-
-        self.critic_1 = CriticNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='critic_1', learning_rate=critic_learning_rate
-        ).to(self.device)
         
-        self.critic_2 = CriticNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='critic_2', learning_rate=critic_learning_rate
-        ).to(self.device)
+        #Create networks
+        self.actor = ActorNetwork(alpha, input_dims, n_actions, name='actor', max_action=env.action_space.high)
+        self.critic_1 = CriticNetwork(beta, input_dims, n_actions, name='critic_1')
+        self.critic_2 = CriticNetwork(beta, input_dims, n_actions, name='critic_2')
+        self.value = ValueNetwork(beta, input_dims, name='value')
+        self.target_value = ValueNetwork(beta, input_dims, name='target_value')
 
-        self.target_actor = ActorNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='target_actor', learning_rate=actor_learning_rate
-        ).to(self.device)
-        
-        self.target_critic_1 = CriticNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='target_critic_1', learning_rate=critic_learning_rate
-        ).to(self.device)
-        
-        self.target_critic_2 = CriticNetwork(
-            input_dims=input_dims, fc1_dims=layer1_size, fc2_dims=layer2_size,
-            n_actions=n_actions, name='target_critic_2', learning_rate=critic_learning_rate
-        ).to(self.device)
-        
-        # Initialize target networks to match the main networks
-        self.update_network_parameters(tau=1.0)
+        self.scale = reward_scale
+        self.update_network_parameters(tau=1)
 
-    def choose_action(self, observation, validation=False):
-        """
-        Decide the next action. If we're still in warmup, sample random actions.
-        Otherwise, use the actor + exploration noise.
-        """
-        if self.time_step < self.warmup and not validation:
-            # Random exploration during warmup
-            mu = T.tensor(
-                np.random.normal(scale=self.noise, size=(self.n_actions,)),
-                dtype=T.float32, device=self.device
-            )
-        else:
-            # Use the actor to generate an action
-            state = T.tensor(observation, dtype=T.float).to(self.device)
-            mu = self.actor.forward(state)
-        
-        # Add exploration noise (per-dimension) if we are training
-        if not validation:
-            exploration_noise = T.tensor(
-                np.random.normal(scale=self.noise, size=(self.n_actions,)),
-                dtype=T.float32, device=self.device
-            )
-            mu_prime = mu + exploration_noise
-        else:
-            mu_prime = mu
+    #Forward our current observation through the policy (actor network) to get an action. Then we return a numpy array
+    def choose_action(self, observation):
+        state = T.Tensor([observation]).to(self.actor.device)
+        actions, _ = self.actor.sample_normal(state, reparameterize=False)
 
-        # Clamp action to valid range
-        mu_prime = T.clamp(mu_prime, self.min_action[0], self.max_action[0])
-        self.time_step += 1
-        return mu_prime.cpu().detach().numpy()
-
+        return actions.cpu().detach().numpy()[0]
+    
+    #Saves transition into the replay buffer for later sampling
     def remember(self, state, action, reward, new_state, done):
         self.memory.store_transition(state, action, reward, new_state, done)
 
-    def learn(self):
-        if self.memory.mem_cntr < self.batch_size * 10:
-            return
-        
-        state, action, reward, new_state, done = self.memory.sample_buffer(self.batch_size)
-
-        reward = T.tensor(reward, dtype=T.float).to(self.device)
-        done = T.tensor(done).to(self.device)
-        next_state = T.tensor(new_state, dtype=T.float).to(self.device)
-        state = T.tensor(state, dtype=T.float).to(self.device)
-        action = T.tensor(action, dtype=T.float).to(self.device)
-
-        # Target actions from target actor
-        target_actions = self.target_actor.forward(next_state)
-
-        # Add clipped noise to target actions (TD3 style)
-        noise = T.tensor(
-            np.random.normal(scale=self.policy_noise, size=target_actions.shape),
-            dtype=T.float32, device=self.device
-        )
-        noise = T.clamp(noise, -self.noise_clip, self.noise_clip)
-        target_actions = target_actions + noise
-        # Clamp final target action
-        target_actions = T.clamp(target_actions, self.min_action[0], self.max_action[0])
-
-        next_q1 = self.target_critic_1.forward(next_state, target_actions)
-        next_q2 = self.target_critic_2.forward(next_state, target_actions)
-        q1 = self.critic_1.forward(state, action)
-        q2 = self.critic_2.forward(state, action)
-
-        # Zero Q for terminal states
-        next_q1[done] = 0.0
-        next_q2[done] = 0.0
-
-        next_q1 = next_q1.view(-1)
-        next_q2 = next_q2.view(-1)
-
-        # Min of the two target critics
-        next_critic_value = T.min(next_q1, next_q2)
-        target = reward + self.gamma * next_critic_value
-        target = target.view(self.batch_size, 1)
-
-        # Critic update
-        self.critic_1.optimizer.zero_grad()
-        self.critic_2.optimizer.zero_grad()
-
-        q1_loss = F.mse_loss(target, q1)
-        q2_loss = F.mse_loss(target, q2)
-        critic_loss = q1_loss + q2_loss
-        critic_loss.backward()
-
-        self.critic_1.optimizer.step()
-        self.critic_2.optimizer.step()
-
-        self.learn_step_cntr += 1
-
-        # Delayed actor update
-        if self.learn_step_cntr % self.update_actor_interval != 0:
-            return
-
-        self.actor.optimizer.zero_grad()
-        actor_q1_loss = self.critic_1.forward(state, self.actor.forward(state))
-        actor_loss = -T.mean(actor_q1_loss)
-        actor_loss.backward()
-        self.actor.optimizer.step()
-
-        # Update target networks
-        self.update_network_parameters()
-
+    #Soft update of target value network
     def update_network_parameters(self, tau=None):
         if tau is None:
             tau = self.tau
 
-        # Actor
-        actor_params = dict(self.actor.named_parameters())
-        target_actor_params = dict(self.target_actor.named_parameters())
-        for name in actor_params:
-            target_actor_params[name] = tau * actor_params[name].clone() + \
-                (1 - tau) * target_actor_params[name].clone()
-        self.target_actor.load_state_dict(target_actor_params)
+        target_value_params = self.target_value.named_parameters()
+        value_params = self.value.named_parameters()
+        
+        target_value_state_dict = dict(target_value_params)
+        value_state_dict = dict(value_params)
 
-        # Critic 1
-        critic_1_params = dict(self.critic_1.named_parameters())
-        target_critic_1_params = dict(self.target_critic_1.named_parameters())
-        for name in critic_1_params:
-            target_critic_1_params[name] = tau * critic_1_params[name].clone() + \
-                (1 - tau) * target_critic_1_params[name].clone()
-        self.target_critic_1.load_state_dict(target_critic_1_params)
-
-        # Critic 2
-        critic_2_params = dict(self.critic_2.named_parameters())
-        target_critic_2_params = dict(self.target_critic_2.named_parameters())
-        for name in critic_2_params:
-            target_critic_2_params[name] = tau * critic_2_params[name].clone() + \
-                (1 - tau) * target_critic_2_params[name].clone()
-        self.target_critic_2.load_state_dict(target_critic_2_params)
+        for name in value_state_dict:
+            value_state_dict[name] = tau*value_state_dict[name].clone() + \
+                (1-tau)*target_value_state_dict[name].clone()
+            
+        self.target_value.load_state_dict(value_state_dict)
 
     def save_models(self):
+        print('...saving models...')
         self.actor.save_checkpoint()
-        self.target_actor.save_checkpoint()
+        self.value.save_checkpoint()
+        self.target_value.save_checkpoint()
         self.critic_1.save_checkpoint()
         self.critic_2.save_checkpoint()
-        self.target_critic_1.save_checkpoint()
-        self.target_critic_2.save_checkpoint()
-        print("Successfully saved models")
 
     def load_models(self):
         try:
-            checkpoint = T.load(self.actor.checkpoint_file, map_location=self.device)
-            self.actor.load_state_dict(checkpoint)
-            self.actor.to(self.device)
+            self.actor.load_checkpoint()
+            self.critic_1.load_checkpoint()
+            self.critic_2.load_checkpoint()
+            self.value.load_checkpoint()
+            self.target_value.load_checkpoint()
+            print("Loaded existing checkpoints.")
+        except FileNotFoundError as e:
+            print("No checkpoints found. Starting from scratch.")
 
-            checkpoint = T.load(self.critic_1.checkpoint_file, map_location=self.device)
-            self.critic_1.load_state_dict(checkpoint)
-            self.critic_1.to(self.device)
 
-            checkpoint = T.load(self.critic_2.checkpoint_file, map_location=self.device)
-            self.critic_2.load_state_dict(checkpoint)
-            self.critic_2.to(self.device)
+    def learn(self):
+        if self.memory.mem_cntr < self.batch_size:
+            return
 
-            checkpoint = T.load(self.target_actor.checkpoint_file, map_location=self.device)
-            self.target_actor.load_state_dict(checkpoint)
-            self.target_actor.to(self.device)
+        # 1) Sample a batch from the replay buffer
+        states, actions, rewards, next_states, dones = \
+            self.memory.sample_buffer(self.batch_size)
 
-            checkpoint = T.load(self.target_critic_1.checkpoint_file, map_location=self.device)
-            self.target_critic_1.load_state_dict(checkpoint)
-            self.target_critic_1.to(self.device)
+        # 2) Convert to tensors on correct device
+        states_t = T.tensor(states, dtype=T.float).to(self.actor.device)
+        next_states_t = T.tensor(next_states, dtype=T.float).to(self.actor.device)
+        actions_t = T.tensor(actions, dtype=T.float).to(self.actor.device)
+        rewards_t = T.tensor(rewards, dtype=T.float).to(self.actor.device)
+        dones_t = T.tensor(dones).to(self.actor.device)
 
-            checkpoint = T.load(self.target_critic_2.checkpoint_file, map_location=self.device)
-            self.target_critic_2.load_state_dict(checkpoint)
-            self.target_critic_2.to(self.device)
+        # 3) Compute current value V(s) and target value V(s') (with the target network)
+        value = self.value(states_t).view(-1)
+        value_ = self.target_value(next_states_t).view(-1)
+        value_[dones_t] = 0.0
 
-            print("Successfully loaded models")
+        # 4) Sample action from current policy for the value loss
+        new_actions, log_probs = self.actor.sample_normal(states_t, reparameterize=False)
+        log_probs = log_probs.view(-1)
 
-        except Exception as e:
-            print(f"Failed to load models: {e}")
+        # Evaluate Q(s, new_actions)
+        q1_new_policy = self.critic_1(states_t, new_actions).view(-1)
+        q2_new_policy = self.critic_2(states_t, new_actions).view(-1)
+        critic_value = T.min(q1_new_policy, q2_new_policy)
+
+        # 5) Value network loss
+        self.value.optimizer.zero_grad()
+        value_target = critic_value - log_probs
+        value_loss = 0.5 * F.mse_loss(value, value_target)
+        value_loss.backward(retain_graph=True)
+        self.value.optimizer.step()
+
+        # 6) Actor (policy) loss
+        self.actor.optimizer.zero_grad()
+        new_actions, log_probs = self.actor.sample_normal(states_t, reparameterize=True)
+        log_probs = log_probs.view(-1)
+        q1_new_policy = self.critic_1(states_t, new_actions).view(-1)
+        q2_new_policy = self.critic_2(states_t, new_actions).view(-1)
+        critic_value = T.min(q1_new_policy, q2_new_policy)
+        actor_loss = (log_probs - critic_value).mean()
+        actor_loss.backward(retain_graph=True)
+        self.actor.optimizer.step()
+
+        # 7) Critic networks loss
+        self.critic_1.optimizer.zero_grad()
+        self.critic_2.optimizer.zero_grad()
+        q_hat = self.scale * rewards_t + self.gamma * value_
+        q1_old_policy = self.critic_1(states_t, actions_t).view(-1)
+        q2_old_policy = self.critic_2(states_t, actions_t).view(-1)
+
+        critic_1_loss = 0.5 * F.mse_loss(q1_old_policy, q_hat)
+        # Make sure you use q2_old_policy here:
+        critic_2_loss = 0.5 * F.mse_loss(q2_old_policy, q_hat)
+        critic_loss = critic_1_loss + critic_2_loss
+        critic_loss.backward()
+        self.critic_1.optimizer.step()
+        self.critic_2.optimizer.step()
+
+        # 8) Soft update target network
+        self.update_network_parameters()
+
+
+

@@ -1,5 +1,5 @@
 import time
-import os 
+import os
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import robosuite as suite
@@ -8,75 +8,91 @@ from sac import Agent
 import torch as T
 
 if __name__ == "__main__":
-    if not os.path.exists("tmp/td3"):
-        os.makedirs("tmp/td3")
 
-    # Switch to Lift environment again
+    # Make sure the same directory structure exists
+    if not os.path.exists("tmp/sac"):
+        os.makedirs("tmp/sac")
+
     env_name = "PickPlace"
 
     env = suite.make(
         env_name,
         robots=["Panda"],
-        controller_configs=suite.load_controller_config(default_controller="JOINT_VELOCITY"),
-        has_renderer=True,              # For rendering
-        render_camera='frontview',
+        controller_configs=suite.load_controller_config(
+            default_controller="JOINT_VELOCITY"),
+        has_renderer=True,              
+        render_camera="frontview",       
         has_offscreen_renderer=False,
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
-        horizon=100,                    # same as training
+        horizon=100,                    
     )
-
     env = GymWrapper(env)
 
-    actor_learning_rate = 0.001
-    critic_learning_rate = 0.001
-    batch_size = 128
+    alpha = 0.0003
+    beta = 0.0003
+    gamma = 0.99
+    tau = 0.005
+    batch_size = 256
     layer1_size = 256
-    layer2_size = 128
+    layer2_size = 256
+    reward_scale = 2.0
 
     agent = Agent(
-        actor_learning_rate=actor_learning_rate,
-        critic_learning_rate=critic_learning_rate,
-        tau=0.005,
+        alpha=alpha,
+        beta=beta,
         input_dims=env.observation_space.shape,
         env=env,
+        gamma=gamma,
         n_actions=env.action_space.shape[0],
+        max_size=1000000,
+        tau=tau,
         layer1_size=layer1_size,
         layer2_size=layer2_size,
-        batch_size=batch_size
+        batch_size=batch_size,
+        reward_scale=reward_scale
     )
 
-    # Check device
     if T.cuda.is_available():
-        agent.device = T.device("cuda")
+        device = T.device("cuda")
     elif T.backends.mps.is_available():
-        agent.device = T.device("mps")
+        device = T.device("mps")
     else:
-        agent.device = T.device("cpu")
-    print("Testing on device:", agent.device)
+        device = T.device("cpu")
+    agent.actor.device = device
+    agent.critic_1.device = device
+    agent.critic_2.device = device
+    agent.value.device = device
+    agent.target_value.device = device
 
-    # Load the saved models
+    print("Testing on device:", device)
+
+    # Load the models from disk
     agent.load_models()
 
-    writer = SummaryWriter()
+    writer = SummaryWriter("logs_test")
 
-    # Fewer episodes for testing
-    n_games = 50
+    n_test_episodes = 10
 
-    for i in range(n_games):
+    for i in range(n_test_episodes):
         observation = env.reset()
         done = False
         score = 0
 
         while not done:
-            # Use the greedy policy (no extra noise), so pass validation=True
-            action = agent.choose_action(observation, validation=True)
+
+            action = agent.choose_action(observation)
             observation, reward, done, info = env.step(action)
             score += reward
 
-            # Optionally render every step
+
             env.render()
 
+            time.sleep(0.02)
+
+
         writer.add_scalar("test_score", score, global_step=i)
-        print(f"Test Episode {i}, Score {score}")
+        print(f"[Test] Episode {i}/{n_test_episodes}, Score = {score}")
+
+    writer.close()
