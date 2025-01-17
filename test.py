@@ -16,17 +16,16 @@ if __name__ == "__main__":
     env_name = "PickPlace"
 
     env = suite.make(
-        env_name,
+        "PickPlace",
         robots=["Panda"],
-        controller_configs=suite.load_controller_config(
-            default_controller="JOINT_VELOCITY"),
-        has_renderer=True,              
-        render_camera="frontview",       
+        controller_configs=suite.load_controller_config(default_controller="JOINT_VELOCITY"),
+        has_renderer=True,
         has_offscreen_renderer=False,
         use_camera_obs=False,
-        reward_shaping=True,
         control_freq=20,
-        horizon=300,                    
+        reward_shaping=True,
+        horizon=200,            
+        single_object_mode=1,    
     )
     env = GymWrapper(env)
 
