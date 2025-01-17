@@ -5,79 +5,88 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import robosuite as suite
 from robosuite.wrappers import GymWrapper
-from networks import CriticNetwork, ActorNetwork
+from networks import CriticNetwork, ActorNetwork, ValueNetwork
 from buffer import ReplayBuffer
 from sac import Agent
+from torch.utils.tensorboard import SummaryWriter
+
 import torch as T
 
 if __name__ == "__main__":
 
-    # Create directory for saving models if it doesn't exist
-    if not os.path.exists("tmp/td3"):
-        os.makedirs("tmp/td3")
+    if not os.path.exists("tmp/sac"):
+        os.makedirs("tmp/sac")
 
-    # Switch to Lift environment
     env_name = "PickPlace"
 
-    # Create the environment using robosuite, with a smaller horizon for faster training
     env = suite.make(
-        env_name, 
+        "PickPlace",
         robots=["Panda"],
         controller_configs=suite.load_controller_config(default_controller="JOINT_VELOCITY"),
-        has_renderer=False,         # <-- Keep headless for faster training
+        has_renderer=True,
         has_offscreen_renderer=False,
         use_camera_obs=False,
-        reward_shaping=True,
         control_freq=20,
-        horizon=100,               # <-- Reduced horizon for quicker rollouts
-    )
-
-    # Wrap the environment to make it compatible with Gym
-    env = GymWrapper(env)
-
-    # Hyperparameters for TD3
-    actor_learning_rate = 0.001
-    critic_learning_rate = 0.001
-    batch_size = 128
-    layer1_size = 256
-    layer2_size = 128
-
-    # Create an Agent
-    agent = Agent(
-        actor_learning_rate=actor_learning_rate,
-        critic_learning_rate=critic_learning_rate,
-        tau=0.005,
-        input_dims=env.observation_space.shape,
-        env=env,
-        n_actions=env.action_space.shape[0],
-        layer1_size=layer1_size,
-        layer2_size=layer2_size,
-        batch_size=batch_size
+        reward_shaping=True,
+        horizon=200,            
+        single_object_mode=1,    
     )
     
-    # Device selection: prefer CUDA -> MPS -> CPU
-    if T.cuda.is_available():
-        agent.device = T.device("cuda")
-    elif T.backends.mps.is_available():
-        agent.device = T.device("mps")
-    else:
-        agent.device = T.device("cpu")
-    print("Training on device:", agent.device)
-
-    # Initialize TensorBoard writer
-    writer = SummaryWriter("logs")
+    env = GymWrapper(env)
+    
 
 
+    alpha = 0.0003           # Actor (policy) learning rate
+    beta = 0.0003            # Critic/Value networks learning rate
+    gamma = 0.99             # Discount factor
+    tau = 0.005              # Soft update parameter
+    batch_size = 256
+    layer1_size = 256
+    layer2_size = 256
+    reward_scale = 2.0       # Common in SAC to scale the rewards
     n_games = 100000
+
+    agent = Agent(
+        alpha=alpha,
+        beta=beta,
+        input_dims=env.observation_space.shape,
+        env=env,
+        gamma=gamma,
+        n_actions=env.action_space.shape[0],
+        max_size=1000000,
+        tau=tau,
+        layer1_size=layer1_size,
+        layer2_size=layer2_size,
+        batch_size=batch_size,
+        reward_scale=reward_scale
+    )
+
+    if T.cuda.is_available():
+        device = T.device("cuda")
+    elif T.backends.mps.is_available():
+        device = T.device("mps")
+    else:
+        device = T.device("cpu")
+
+    print("Training on device:", device)
+
+    agent.actor.device = device
+    agent.critic_1.device = device
+    agent.critic_2.device = device
+    agent.value.device = device
+    agent.target_value.device = device
+
+    # Initialize TensorBoard
+    writer = SummaryWriter("logs")
 
     best_score = -np.inf
     episode_identifier = (
-        f"actor_lr={actor_learning_rate} critic_lr={critic_learning_rate} "
-        f"batch_size={batch_size} layer1={layer1_size} layer2={layer2_size} "
-        f"tau=0.005 env={env_name} {int(time.time())}"
+        f"alpha={alpha} beta={beta} batch_size={batch_size} "
+        f"layer1={layer1_size} layer2={layer2_size} tau={tau} "
+        f"env={env_name} reward_scale={reward_scale} "
+        f"{int(time.time())}"
     )
 
-    # Optional: Load pretrained models if you have them
     agent.load_models()
 
     for i in range(n_games):
@@ -86,23 +95,22 @@ if __name__ == "__main__":
         score = 0
 
         while not done:
-            # Agent chooses an action
+            # 1) Agent chooses action
             action = agent.choose_action(observation)
+            # 2) Step environment
             next_observation, reward, done, info = env.step(action)
             score += reward
-
-            # Store and learn
+            # 3) Store transition and learn
             agent.remember(observation, action, reward, next_observation, done)
             agent.learn()
-
+            # 4) Move to next state
             observation = next_observation
-            
 
         # Log the score in TensorBoard
         writer.add_scalar(f"score/{episode_identifier}", score, global_step=i)
 
-        # Save models every 10 episodes
+        # Save models every 10 episodes (adjust as desired)
         if i % 10 == 0:
             agent.save_models()
-        
+
         print(f"Episode {i}, Score {score}")
