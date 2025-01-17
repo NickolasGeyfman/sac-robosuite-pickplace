@@ -90,6 +90,7 @@ if __name__ == "__main__":
     agent.load_models()
 
     for i in range(n_games):
+        start_time = time.time()
         observation = env.reset()
         done = False
         score = 0
@@ -98,7 +99,7 @@ if __name__ == "__main__":
             # 1) Agent chooses action
             action = agent.choose_action(observation)
             # 2) Step environment
-            start_time = time.time()
+            
 
             next_observation, reward, done, info = env.step(action)
             score += reward
@@ -107,8 +108,7 @@ if __name__ == "__main__":
             agent.learn()
             # 4) Move to next state
             observation = next_observation
-            end_time = time.time()
-            elapsed = end_time - start_time
+
             
 
 
@@ -118,5 +118,8 @@ if __name__ == "__main__":
         # Save models every 10 episodes (adjust as desired)
         if i % 10 == 0:
             agent.save_models()
+
+        end_time = time.time()
+        elapsed = end_time - start_time
 
         print(f"Episode {i} finished with score {score:.2f} in {elapsed:.2f} seconds")
