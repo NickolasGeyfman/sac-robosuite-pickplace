@@ -6,7 +6,6 @@ tensorflow
 robosuite==1.4.0
 termcolor
 h5py
---extra-index-url https://download.pytorch.org/whl/metal.html
 torch
 torchvision
 torchaudio
