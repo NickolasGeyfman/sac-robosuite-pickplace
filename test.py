@@ -24,11 +24,12 @@ if __name__ == "__main__":
         use_camera_obs=False,
         control_freq=20,
         reward_shaping=True,
-        horizon=200,            
-        single_object_mode=1,    
+        horizon=200,
+        single_object_mode=1,
     )
     env = GymWrapper(env)
 
+    # Hyperparameters
     alpha = 0.0003
     beta = 0.0003
     gamma = 0.99
@@ -38,13 +39,14 @@ if __name__ == "__main__":
     layer2_size = 256
     reward_scale = 2.0
 
+    # Create the agent WITHOUT passing env=
     agent = Agent(
         alpha=alpha,
         beta=beta,
-        input_dims=env.observation_space.shape,
-        env=env,
-        gamma=gamma,
+        input_dims=env.observation_space.shape,  # shape of observations
         n_actions=env.action_space.shape[0],
+        max_action=env.action_space.high,        # pass the action space's bounds
+        gamma=gamma,
         max_size=1000000,
         tau=tau,
         layer1_size=layer1_size,
@@ -53,12 +55,15 @@ if __name__ == "__main__":
         reward_scale=reward_scale
     )
 
+    # Device setup
     if T.cuda.is_available():
         device = T.device("cuda")
     elif T.backends.mps.is_available():
         device = T.device("mps")
     else:
         device = T.device("cpu")
+
+    # Assign device to networks
     agent.actor.device = device
     agent.critic_1.device = device
     agent.critic_2.device = device
@@ -80,16 +85,12 @@ if __name__ == "__main__":
         score = 0
 
         while not done:
-
             action = agent.choose_action(observation)
             observation, reward, done, info = env.step(action)
             score += reward
 
-
             env.render()
-
             time.sleep(0.02)
-
 
         writer.add_scalar("test_score", score, global_step=i)
         print(f"[Test] Episode {i}/{n_test_episodes}, Score = {score}")

@@ -2,6 +2,7 @@ gym
 pybullet
 matplotlib
 tensorboard
+tensorflow
 robosuite==1.4.0
 termcolor
 h5py
@@ -9,3 +10,4 @@ h5py
 torch
 torchvision
 torchaudio
+stable-baselines
