@@ -138,7 +138,7 @@ def main_parallel():
     # 4) Environment config for workers
     env_config = {
         "robots": ["Panda"],
-        "controller_configs": suite.load_controller_config(default_controller="JOINT_VELOCITY"),
+        "controller_configs": suite.load_controller_config(default_controller="OSC_POSITION"),
         "control_freq": 20,
         "horizon": 200,
         "single_object_mode": 1
@@ -169,7 +169,7 @@ def main_parallel():
     episode_counts = [0] * n_envs
 
     # 7) Training loop
-    total_steps = 10000000000  # example target, you can set higher if needed
+    total_steps = 10000000000  
     step_count = 0
     total_start_time = time.time()
 

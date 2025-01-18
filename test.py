@@ -18,7 +18,7 @@ if __name__ == "__main__":
     env = suite.make(
         "PickPlace",
         robots=["Panda"],
-        controller_configs=suite.load_controller_config(default_controller="JOINT_VELOCITY"),
+        controller_configs=suite.load_controller_config(default_controller="OSC_POSITION"),
         has_renderer=True,
         has_offscreen_renderer=False,
         use_camera_obs=False,
